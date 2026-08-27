@@ -11,6 +11,26 @@ PORKBUN_CHECK_GAP_SECONDS="${PORKBUN_CHECK_GAP_SECONDS:-11}"
 PORKBUN_LAST_PRICE_USD=""
 PORKBUN_LAST_COST_CENTS=""
 PORKBUN_LAST_CHECKED_DOMAIN=""
+PORKBUN_QUOTE_FILE="${PORKBUN_QUOTE_FILE:-${PROXIES_STATE}/porkbun-last-quote}"
+
+porkbun_save_quote() {
+  local domain="$1"
+  local cents="$2"
+  mkdir -p "$(dirname "${PORKBUN_QUOTE_FILE}")"
+  printf '%s %s\n' "${domain}" "${cents}" >"${PORKBUN_QUOTE_FILE}"
+}
+
+porkbun_load_quote() {
+  local domain="$1"
+  local stored_domain stored_cents
+  PORKBUN_LAST_COST_CENTS=""
+  PORKBUN_LAST_CHECKED_DOMAIN=""
+  [[ -f "${PORKBUN_QUOTE_FILE}" ]] || return 1
+  read -r stored_domain stored_cents <"${PORKBUN_QUOTE_FILE}" || return 1
+  [[ "${stored_domain}" == "${domain}" && "${stored_cents}" =~ ^[0-9]+$ ]] || return 1
+  PORKBUN_LAST_CHECKED_DOMAIN="${stored_domain}"
+  PORKBUN_LAST_COST_CENTS="${stored_cents}"
+}
 
 porkbun_payload() {
   local extra="${1-}"
@@ -159,7 +179,7 @@ porkbun_check_domain() {
   esac
 
   if PORKBUN_LAST_COST_CENTS="$(porkbun_extract_cost_cents "${json}")"; then
-    :
+    porkbun_save_quote "${domain}" "${PORKBUN_LAST_COST_CENTS}"
   else
     PORKBUN_LAST_COST_CENTS=""
     log "Porkbun checkDomain JSON had no usable price: $(jq -c '.' <<<"${json}" 2>/dev/null || printf '%s' "${json}")"
@@ -183,14 +203,16 @@ porkbun_register_domain() {
   local domain="$1"
   local json extra
 
-  if [[ "${PORKBUN_LAST_CHECKED_DOMAIN}" == "${domain}" && -n "${PORKBUN_LAST_COST_CENTS}" ]]; then
+  porkbun_load_quote "${domain}" || true
+  if [[ "${PORKBUN_LAST_CHECKED_DOMAIN:-}" == "${domain}" && -n "${PORKBUN_LAST_COST_CENTS:-}" ]]; then
     log "Using cached Porkbun quote for ${domain} (${PORKBUN_LAST_COST_CENTS} cents); skipping second checkDomain"
   else
-    log "Verifying ${domain} is available before Porkbun purchase"
+    log "No cached quote for ${domain}; waiting ${PORKBUN_CHECK_GAP_SECONDS}s then checking once"
+    sleep "${PORKBUN_CHECK_GAP_SECONDS}"
     porkbun_check_domain "${domain}" \
       || die "Refusing to purchase ${domain}: Porkbun checkDomain did not return available"
   fi
-  [[ -n "${PORKBUN_LAST_COST_CENTS}" ]] \
+  [[ -n "${PORKBUN_LAST_COST_CENTS:-}" ]] \
     || die "Porkbun checkDomain did not return a price for ${domain}"
 
   log "Purchasing ${domain} (cost=${PORKBUN_LAST_COST_CENTS} cents)"
@@ -286,8 +308,8 @@ porkbun_find_available_domain() {
     domain="${label}.com"
     log "Checking Porkbun availability for ${domain} (attempt ${attempt}/${max_attempts})"
     if porkbun_domain_available "${domain}"; then
+      REGISTRAR_SELECTED_DOMAIN="${domain}"
       log "Domain available: ${domain} (cost=${PORKBUN_LAST_COST_CENTS:-?} cents)"
-      printf '%s\n' "${domain}"
       return 0
     fi
     log "Domain not available: ${domain}"
