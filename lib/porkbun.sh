@@ -10,7 +10,10 @@ PORKBUN_MAX_TIME="${PORKBUN_MAX_TIME:-60}"
 PORKBUN_CHECK_GAP_SECONDS="${PORKBUN_CHECK_GAP_SECONDS:-11}"
 
 porkbun_payload() {
-  local extra="${1:-{}}"
+  local extra="${1-}"
+  if [[ -z "${extra}" ]]; then
+    extra='{}'
+  fi
   jq -n --arg k "${PORKBUN_API_KEY}" --arg s "${PORKBUN_SECRET_KEY}" --argjson e "${extra}" \
     '{apikey:$k, secretapikey:$s} + $e'
 }
@@ -23,8 +26,11 @@ porkbun_status() {
 # Prints response body. Retries once on HTTP 429.
 porkbun_post() {
   local path="$1"
-  local extra="${2:-{}}"
+  local extra="${2-}"
   local allow_fail="${3:-0}"
+  if [[ -z "${extra}" ]]; then
+    extra='{}'
+  fi
   local url="${PORKBUN_API_BASE}${path}"
   local payload response http_code body status wait_s attempt
 
