@@ -120,18 +120,24 @@ porkbun_extract_cost_cents() {
   local raw
   raw="$(
     jq -r '
+      def as_price:
+        if type == "number" then .
+        elif type == "string" and test("^[0-9]+([.][0-9]+)?$") then .
+        elif type == "object" then
+          (.registration // .price // empty)
+        else empty
+        end;
       [
-        .cost,
-        .response.cost,
-        .price,
-        .response.price,
-        .response.price.registration,
-        .response.pricing.registration,
-        .response.prices.registration,
-        .response.registration,
-        .response.registrationPrice
+        (.cost | as_price),
+        (.response.cost | as_price),
+        (.price | as_price),
+        (.response.price | as_price),
+        (.response.pricing | as_price),
+        (.response.prices | as_price),
+        (.response.regularPrice | as_price),
+        (.response.registrationPrice | as_price)
       ]
-      | map(select(. != null and ((type == "number") or (type == "string" and . != ""))))
+      | map(select(. != null and . != ""))
       | .[0] // empty
     ' <<<"${json}"
   )"
@@ -310,6 +316,7 @@ porkbun_find_available_domain() {
     if porkbun_domain_available "${domain}"; then
       REGISTRAR_SELECTED_DOMAIN="${domain}"
       log "Domain available: ${domain} (cost=${PORKBUN_LAST_COST_CENTS:-?} cents)"
+      printf '%s\n' "${domain}"
       return 0
     fi
     log "Domain not available: ${domain}"
