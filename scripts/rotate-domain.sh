@@ -220,7 +220,13 @@ else
     STATUS="${DOMAIN_STATUS_PURCHASED}"
   else
     log "Searching for an available random .com via ${DOMAIN_SOURCE}"
+    REGISTRAR_SELECTED_DOMAIN=""
     DOMAIN="$(registrar_find_available_domain 30)"
+    DOMAIN="${REGISTRAR_SELECTED_DOMAIN:-${DOMAIN}}"
+    if [[ -z "${DOMAIN}" && -f "${PORKBUN_QUOTE_FILE:-}" ]]; then
+      read -r DOMAIN _ <"${PORKBUN_QUOTE_FILE}" || true
+    fi
+    [[ -n "${DOMAIN}" ]] || die "Registrar did not select a domain"
     log "Selected available domain: ${DOMAIN}"
     registrar_register_domain "${DOMAIN}"
     mark_domain_purchased "${DOMAIN}"
