@@ -8,6 +8,9 @@ PORKBUN_API_BASE="${PORKBUN_API_BASE:-https://api.porkbun.com/api/json/v3}"
 PORKBUN_CONNECT_TIMEOUT="${PORKBUN_CONNECT_TIMEOUT:-15}"
 PORKBUN_MAX_TIME="${PORKBUN_MAX_TIME:-60}"
 PORKBUN_CHECK_GAP_SECONDS="${PORKBUN_CHECK_GAP_SECONDS:-11}"
+PORKBUN_LAST_PRICE_USD=""
+PORKBUN_LAST_COST_CENTS=""
+PORKBUN_LAST_CHECKED_DOMAIN=""
 
 porkbun_payload() {
   local extra="${1-}"
@@ -91,69 +94,106 @@ porkbun_post() {
   die "Porkbun still rate-limited after retry: ${path}"
 }
 
-# Prints "yes" or "no". Sets PORKBUN_LAST_PRICE_USD / PORKBUN_LAST_COST_CENTS.
+# Extract registration cost in US cents from a checkDomain body.
+porkbun_extract_cost_cents() {
+  local json="$1"
+  local raw
+  raw="$(
+    jq -r '
+      [
+        .cost,
+        .response.cost,
+        .price,
+        .response.price,
+        .response.price.registration,
+        .response.pricing.registration,
+        .response.prices.registration,
+        .response.registration,
+        .response.registrationPrice
+      ]
+      | map(select(. != null and ((type == "number") or (type == "string" and . != ""))))
+      | .[0] // empty
+    ' <<<"${json}"
+  )"
+  [[ -n "${raw}" && "${raw}" != "null" ]] || return 1
+  if [[ "${raw}" =~ ^[0-9]+$ ]]; then
+    # Already cents if large; USD whole-dollars are rare for .com. Prefer cents when >= 100.
+    if [[ "${raw}" -ge 100 ]]; then
+      printf '%s\n' "${raw}"
+    else
+      printf '%s\n' "$((raw * 100))"
+    fi
+    return 0
+  fi
+  if [[ "${raw}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    awk -v p="${raw}" 'BEGIN { printf "%.0f\n", (p * 100) + 0.0001 }'
+    return 0
+  fi
+  return 1
+}
+
+# Sets PORKBUN_LAST_* globals. Return 0 if available. Do not run in $().
 porkbun_check_domain() {
   local domain="$1"
-  local json avail price cost premium
+  local json avail premium
   PORKBUN_LAST_PRICE_USD=""
   PORKBUN_LAST_COST_CENTS=""
+  PORKBUN_LAST_CHECKED_DOMAIN="${domain}"
 
-  json="$(porkbun_post "/domain/checkDomain/${domain}" '{}' 1)" || {
-    log "Porkbun check failed for ${domain}: ${json}"
-    printf 'no\n'
+  json="$(porkbun_post "/domain/checkDomain/${domain}")" || {
+    log "Porkbun check failed for ${domain}"
     return 1
   }
 
   avail="$(jq -r '.avail // .response.avail // .response.available // empty' <<<"${json}")"
-  premium="$(jq -r '.premium // .response.premium // "no"' <<<"${json}")"
-  price="$(jq -r '.price // .response.price // .response.registration // empty' <<<"${json}")"
-  cost="$(jq -r '.cost // .response.cost // empty' <<<"${json}")"
+  premium="$(jq -r '
+    .premium // .response.premium // .response.price.premium // "no"
+    | if type == "boolean" then (if . then "yes" else "no" end) else tostring end
+  ' <<<"${json}")"
 
   case "$(printf '%s' "${premium}" | tr '[:upper:]' '[:lower:]')" in
     yes|true|1)
       log "Skipping premium domain ${domain}"
-      printf 'no\n'
       return 1
       ;;
   esac
 
-  if [[ "${cost}" =~ ^[0-9]+$ ]]; then
-    PORKBUN_LAST_COST_CENTS="${cost}"
-  elif [[ -n "${price}" && "${price}" != "null" ]]; then
-    PORKBUN_LAST_PRICE_USD="${price}"
-    PORKBUN_LAST_COST_CENTS="$(awk -v p="${price}" 'BEGIN { printf "%.0f", (p * 100) + 0.0001 }')"
+  if PORKBUN_LAST_COST_CENTS="$(porkbun_extract_cost_cents "${json}")"; then
+    :
+  else
+    PORKBUN_LAST_COST_CENTS=""
+    log "Porkbun checkDomain JSON had no usable price: $(jq -c '.' <<<"${json}" 2>/dev/null || printf '%s' "${json}")"
   fi
 
   case "$(printf '%s' "${avail}" | tr '[:upper:]' '[:lower:]')" in
     yes|available|true|1)
-      printf 'yes\n'
       return 0
       ;;
     *)
-      printf 'no\n'
       return 1
       ;;
   esac
 }
 
 porkbun_domain_available() {
-  local result
-  result="$(porkbun_check_domain "$1")" || return 1
-  [[ "${result}" == "yes" ]]
+  porkbun_check_domain "$1"
 }
 
 porkbun_register_domain() {
   local domain="$1"
   local json extra
 
-  log "Verifying ${domain} is still available before Porkbun purchase"
-  if ! porkbun_domain_available "${domain}"; then
-    die "Refusing to purchase ${domain}: Porkbun checkDomain did not return available"
+  if [[ "${PORKBUN_LAST_CHECKED_DOMAIN}" == "${domain}" && -n "${PORKBUN_LAST_COST_CENTS}" ]]; then
+    log "Using cached Porkbun quote for ${domain} (${PORKBUN_LAST_COST_CENTS} cents); skipping second checkDomain"
+  else
+    log "Verifying ${domain} is available before Porkbun purchase"
+    porkbun_check_domain "${domain}" \
+      || die "Refusing to purchase ${domain}: Porkbun checkDomain did not return available"
   fi
   [[ -n "${PORKBUN_LAST_COST_CENTS}" ]] \
     || die "Porkbun checkDomain did not return a price for ${domain}"
 
-  log "Availability confirmed for ${domain} (cost=${PORKBUN_LAST_COST_CENTS} cents); proceeding with domain/create"
+  log "Purchasing ${domain} (cost=${PORKBUN_LAST_COST_CENTS} cents)"
   extra="$(jq -n --argjson c "${PORKBUN_LAST_COST_CENTS}" \
     '{cost:$c, agreeToTerms:"yes", whoisPrivacy:true}')"
   json="$(porkbun_post "/domain/create/${domain}" "${extra}")"
