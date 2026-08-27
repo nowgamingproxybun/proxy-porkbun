@@ -1,0 +1,56 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name cdn.__DOMAIN__ lobby-prod-cdn.__DOMAIN__;
+
+    ssl_certificate     /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Variable + resolver => DNS at request time (nginx still starts if upstream is down).
+    resolver 127.0.0.53 1.1.1.1 8.8.8.8 valid=60s ipv6=off;
+
+    location / {
+        set $proxies_cdn_upstream "__CDN_ORIGIN__";
+        proxy_pass https://$proxies_cdn_upstream;
+        proxy_ssl_server_name on;
+        proxy_ssl_name __CDN_ORIGIN__;
+        proxy_ssl_verify off;
+
+        proxy_set_header Host __CDN_ORIGIN__;
+        proxy_set_header X-Forwarded-For __CDN_ORIGIN__;
+        proxy_set_header X-Real-IP $server_addr;
+        proxy_set_header Cookie "";
+
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header CF-RAY "";
+        proxy_set_header CF-Visitor "";
+        proxy_set_header CF-IPCountry "";
+        proxy_set_header CF-Worker "";
+        proxy_set_header CDN-Loop "";
+        proxy_set_header CF-Request-ID "";
+        proxy_set_header True-Client-IP "";
+        proxy_set_header X-CF-Loop "";
+        proxy_set_header CF-EW-Via "";
+
+        proxy_set_header CF-IPCity "";
+        proxy_set_header CF-IPContinent "";
+        proxy_set_header CF-IPLatitude "";
+        proxy_set_header CF-IPLongitude "";
+        proxy_set_header CF-IPRegionCode "";
+        proxy_set_header CF-IPTimeZone "";
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+        proxy_busy_buffers_size 16k;
+    }
+}

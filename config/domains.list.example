@@ -1,0 +1,11 @@
+# Manual domain pool (DOMAIN_SOURCE=manual in /etc/proxies/credentials.env).
+# One FQDN per line. Lines starting with # are ignored.
+#
+# Install:
+#   --domain-source manual --domain example.com --domain other.com
+# Later:
+#   echo 'another.com' | sudo tee -a /etc/proxies/domains.list
+#   sudo /opt/proxies/scripts/force-rotate.sh --use-domain another.com
+#
+# example.com
+# other-domain.net
